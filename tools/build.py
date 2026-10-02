@@ -173,6 +173,11 @@ def build(dirs, use_fake=False, write=False, install=False):
         sys.exit(1)
     # ② 음절(많이 쓰는 순)
     cnt = collections.Counter(c for r in tr.values() for c in r['k'] if rules.is_kr(c))
+    import board                                     # 이름·키워드 입력판(work/text/wiz_입력판.tsv)
+    brows = board.load() if os.path.exists(board.OUT) else []
+    for _, _, ko in brows:
+        if ko:
+            cnt[ko] += 0                              # 판 음절도 글꼴에(이름 음절은 번역에 없을 수 있음)
     syl = [c for c, _ in cnt.most_common()]
     assert M.KR_N0 + len(syl) <= SLOT_MAX, ('음절이 너무 많음', len(syl))
     E = Enc(syl)
@@ -258,8 +263,10 @@ def build(dirs, use_fake=False, write=False, install=False):
                 for q in refs[p]:
                     v = struct.unpack_from('>I', g, q)[0] - LD
                     assert bytes(g[v:g.index(0, v)]) == want, ('직업 되읽기', name, t)
+        if brows:
+            g = bytearray(board.patch(bytes(g), name, lambda ch: M.kcode(E.idx[ch])))
         files[name] = g
-        print('실행 %-12s 문자열 %d곳 · 라벨 %d · 직업 %d' % (name, k, kl, len(jm)))
+        print('실행 %-12s 문자열 %d곳 · 라벨 %d · 직업 %d · 입력판 %d칸' % (name, k, kl, len(jm), sum(1 for b in brows if b[2])))
     # ⑤ 나레이션
     nm = {r['src']: r['k'] for r in tr.values() if r['id'][0] == 'N'}
     D = __import__('disc').Disc(); fs = {e[0]: e for e in D.walk()}
