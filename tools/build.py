@@ -23,6 +23,15 @@ DISC = os.path.join(ROOT, 'work', 'disc')
 F_DIR = r'F:\hospi\roms\ss roms\Wizardry VI  VII Complete (Japan) (3M)'
 FONT12 = r'C:\claude\utils\font\Galmuri-v2.40.3\Galmuri11.bdf'
 SLOT_MAX = 69 * 94                   # 70구 = 블롭 → 한글 칸은 그 앞까지
+# ★전투 메시지 조각 구역(2026-10-03 실기 «頭에 명중 부시워커に») — 한 글자 문자열(頭·に·は…)을 추출기가 걸러 빠졌었다.
+#   구역 안 문자열은 전부 포인터로만 참조(가운데 가리키는 포인터 0) → 구역 안에서 다시 배치 + 포인터 수정(직업 이름 방식).
+#   대사 출력은 0x20 = 줄바꿈이라 조각 안 띄어쓰기는 전각 공백(코드가 조각 사이에 0x20 을 넣어 줄을 바꾼다).
+COMBAT_REGION = {'WIZ6.BIN': (0x1BA7C, 0x1BBFC), 'SL.BIN': (0x1BA1C, 0x1BB9C)}      # 파일 오프셋 [시작, 끝)
+COMBAT_KR = {'尻尾': '꼬리', '翼': '날개', '手': '손', '足': '발', '体': '몸', '頭': '머리',
+             'の攻撃': '의 공격', 'に命中！': '에 명중！', 'に': '에게', 'は': '는',
+             'を倒した！': '를 쓰러뜨렸다！', '沈黙している': '침묵하고 있다', '成功した！': '성공했다！'}
+# 구역 밖 한 글자 조사(제자리, 원래 2바이트) — 0x18508 の·0x18540 お 는 디버그 메뉴라 둠
+SINGLE_KR = {'WIZ6.BIN': {0xE088: '는', 0x3D7C4: '는', 0x3DD88: '에'}, 'SL.BIN': {0xE2C0: '는'}}
 HEXB = re.compile(r'\\x([0-9A-Fa-f]{2})')
 
 
@@ -188,7 +197,7 @@ def build(dirs, use_fake=False, write=False, install=False):
         dn, hn, mn = huff.NAMES[w]
         dbs0, hdr0 = (open(os.path.join(DISC, n), 'rb').read() for n in (dn, hn))
         n, res = huff.entries(w)
-        m = {r['src']: r['k'] for r in tr.values() if r['id'][0] == w}
+        m = {r['src']: rules.layout(r['src'], r['k']) for r in tr.values() if r['id'][0] == w}   # ★13칸 접기(0x20 = 줄바꿈)
         done = 0; res2 = []
         for idx, pieces in res:
             new = []
@@ -263,12 +272,19 @@ def build(dirs, use_fake=False, write=False, install=False):
                 for q in refs[p]:
                     v = struct.unpack_from('>I', g, q)[0] - LD
                     assert bytes(g[v:g.index(0, v)]) == want, ('직업 되읽기', name, t)
+        kc = 0
+        if name in COMBAT_REGION:
+            kc = _combat(g, name, LD, xm, E)
+        for off, ko in SINGLE_KR.get(name, {}).items():
+            assert g[off + 2] == 0 and g[off] >= 0x81, (name, hex(off))
+            g[off:off + 2] = E.text(ko); kc += 1
         if brows:
             g = bytearray(board.patch(bytes(g), name, lambda ch: M.kcode(E.idx[ch])))
         files[name] = g
-        print('실행 %-12s 문자열 %d곳 · 라벨 %d · 직업 %d · 입력판 %d칸' % (name, k, kl, len(jm), sum(1 for b in brows if b[2])))
+        print('실행 %-12s 문자열 %d곳 · 라벨 %d · 직업 %d · 전투 조각 %d · 입력판 %d칸' % (name, k, kl, len(jm), kc, sum(1 for b in brows if b[2])))
     # ⑤ 나레이션
-    nm = {r['src']: r['k'] for r in tr.values() if r['id'][0] == 'N'}
+    nm = {r['src']: (r['k'] if rules.NTOKEN.search(r['k']) else rules.narr_layout(r['k'])[0])   # ★2바이트만·23칸×4줄로 다시 접기
+          for r in tr.values() if r['id'][0] == 'N'}
     D = __import__('disc').Disc(); fs = {e[0]: e for e in D.walk()}
     for f in extract.NARR:
         d = bytearray(D.read(fs[f][1], fs[f][2])); k = 0
@@ -292,6 +308,13 @@ def build(dirs, use_fake=False, write=False, install=False):
     for name in M.GAMES:
         files[name] = M.patch_exe(bytes(files[name]), name, offs)
     print('KANJI12: 한글 %d칸 + 블롭 %d B' % (len(syl), len(blob)))
+    if brows:                                         # ★화면의 입력판 = NOHA.SB 그림(칸 글자표와 따로) — 같은 배정표로 다시 그림
+        files['NOHA.SB'], nn = board.patch_noha(open(os.path.join(DISC, 'NOHA.SB'), 'rb').read())
+        print('입력판 그림 NOHA.SB: %d칸' % nn)
+    cpk = os.path.join(ROOT, 'work', 'kr', 'BCF_OP.CPK')       # VI 오프닝 동영상 구운 자막(tools/cpk.py 가 만든다)
+    if os.path.exists(cpk):
+        files['BCF_OP.CPK'] = open(cpk, 'rb').read()
+        print('동영상 BCF_OP.CPK 자막판 %d B' % len(files['BCF_OP.CPK']))
     if not write:
         print('(검사만 — --write 로 디스크 만들기)'); return
     import disc, iso
@@ -315,6 +338,38 @@ def _decode(dbs, hdr, tree):
             t, p = huff.decode_piece(tree, dbs, p); ps.append(t)
         out.append((idx, ps))
     return out
+
+
+def _combat(g, name, LD, xm, E):
+    """전투 조각 구역을 번역으로 다시 배치하고 포인터(4 B 정렬 절대 주소)를 고친다. 원문·포인터는 디스크 원본에서 읽는다."""
+    a0, a1 = COMBAT_REGION[name]
+    g0 = open(os.path.join(DISC, name), 'rb').read()
+    olds = []; p = a0
+    while p < a1:
+        if g0[p] == 0:
+            p += 1; continue
+        e = g0.index(0, p); olds.append((p, g0[p:e].decode('cp932'))); p = e
+    blob = bytearray(); new_at = {}
+    for p, t in olds:
+        ko = COMBAT_KR.get(t) or xm.get(extract.esc(t))
+        assert ko, ('전투 조각 번역 없음', hex(p), t)
+        if t.endswith('！') and not ko.endswith('！'):
+            ko += '！'
+        new_at[p] = len(blob); blob += E.text(ko.strip().replace(' ', '　')) + bytes(1)
+    assert len(blob) <= a1 - a0, ('전투 조각 구역 넘침', len(blob), a1 - a0)
+    refs = {}
+    for q in range(0, len(g) - 3, 4):
+        v = struct.unpack_from('>I', g0, q)[0] - LD
+        if a0 <= v < a1:
+            assert v in new_at, ('구역 가운데 가리키는 포인터', hex(q), hex(v))
+            refs.setdefault(v, []).append(q)
+    assert all(p in refs for p, _ in olds), [hex(p) for p, _ in olds if p not in refs]
+    g[a0:a1] = blob + bytes(a1 - a0 - len(blob))
+    for p, qs in refs.items():
+        for q in qs:
+            assert struct.unpack_from('>I', g, q)[0] == LD + p     # 앞 단계가 이 칸을 건드리지 않았는지
+            struct.pack_into('>I', g, q, LD + a0 + new_at[p])
+    return len(olds)
 
 
 def _exe_strings(d):

@@ -30,17 +30,19 @@ GAMES = {   # 실행 파일 → 주소
                          draw=0x06033B1C, basev=0x06078B96, vram=0x25C10000,
                          conv=0x06020608, conv_end=0x06020694, conv_tab=0x06059EC0, conv_buf=0x06085F98,
                          jobs=(0x06010D90, 0x06010DF8)),
-    'WIZ6.BIN':     dict(load=0x06010000, kanji=0x280000, cls=0x06015480, cls_end=0x06015510,
+    'WIZ6.BIN':     dict(load=0x06010000, kanji=0x2D2430, cls=0x06015480, cls_end=0x06015510,
                          draw=0x06015678, basev=0x06078836, vram=0x25C10000,
                          conv=0x0603A9A4, conv_end=0x0603AA30, conv_tab=0x060861CC, conv_buf=0x060A1714,
                          jobs=(0x060182FC, 0x06018364)),
-    'SL.BIN':       dict(load=0x06010000, kanji=0x280000, cls=0x06015548, cls_end=0x060155D8,
+    'SL.BIN':       dict(load=0x06010000, kanji=0x2D2430, cls=0x06015548, cls_end=0x060155D8,
                          draw=0x06015740, basev=0x0607A456, vram=0x25C10000,
                          conv=0x0603B654, conv_end=0x0603B6E0, conv_tab=0x06087514, conv_buf=0x060A2BC4,
                          jobs=(0x060183C4, 0x0601842C)),
 }   # conv = 이름 전각→반각(초상 라벨) 함수(코드는 셋이 같음 — 바이트 패턴), conv_tab = (전각 ptr, 반각 ptr)×124(마지막 = ﾌﾒｲ 기본값)
     # jobs = 반각 직업 이름 14개 구역(ﾆﾝｼﾞｬ‥ﾌｧｲﾀｰ, 끝 다음 = 남의 코드) — 빌더가 구역 안에서 다시 배치하고 포인터를 고침
-    # VI: KANJI12 0x280000 = 오프닝 스테이트에서 확인(메뉴 중 상주는 ⏳실기), FONT_1 → 0x25C10000(0x06015384 적재, 리터럴 확인)
+    # ★KANJI12 = 0x2D2430(셋 다 — 대사 글자 출력 옆 리터럴 WIZ6 0x06016814·SL 0x060168DC). 0x280000 은 오프닝(BCFOP 등)이 올린 사본일 뿐이라
+    #   오프닝을 안 거치면(SL 로 바로) 비어 있어 훅이 빈 메모리로 점프 → 예외 무한 루프 0x06000952(2026-10-03 «음악만 나오며 크래시»).
+    # FONT_1 → 0x25C10000(0x06015384 적재, 리터럴 확인)
 
 
 def kcode(i):

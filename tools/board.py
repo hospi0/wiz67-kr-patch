@@ -41,8 +41,9 @@ def keyword_syllables():
 
 def plan():
     need = keyword_syllables()
-    slots = list(KANA_ORDER) + list(ALPHA)                     # 직접 칸(판 순서)
-    nd = len(slots); bases = [(b, '゛', i) for i, b in enumerate(VOICED_BASE)] + [(b, '゜', i) for i, b in enumerate(SEMI_BASE)]
+    slots = list(KANA_ORDER) + list(ALPHA)                     # 직접 칸(판 순서) — ★영문 26칸은 비워 원래 글자(2026-10-03 사용자: 키워드 줄여 영문 되살림)
+    fill = list(KANA_ORDER)
+    nd = len(fill); bases = [(b, '゛', i) for i, b in enumerate(VOICED_BASE)] + [(b, '゜', i) for i, b in enumerate(SEMI_BASE)]
     allsyl = sorted(need)
     assert len(allsyl) <= nd + len(bases), ('음절이 칸보다 많음', len(allsyl))
     # ★가나다순 한 줄로: 판 순서대로 칸을 채우다가 바탕 칸을 지나면 바로 다음 음절 = ゛, 그다음 = ゜(ハ‥ホ)
@@ -52,7 +53,7 @@ def plan():
     seq = sorted(set(allsyl) | set(spare))
     vb = {b: i for i, b in enumerate(VOICED_BASE)}; sb = {b: i for i, b in enumerate(SEMI_BASE)}
     at = {}; pair = {}; it = iter(seq)
-    order = list(KANA_ORDER) + list(ALPHA)
+    order = fill
     for sl in order:
         c = next(it, None)
         if c is None:
@@ -105,6 +106,58 @@ def patch(g, name, enc):
         assert g[o + 2:o + 4] == b'\0\0' or kind != '직접' or True
         g[o:o + 4] = enc(ko) + b'\0\0'
     return bytes(g)
+
+
+# ★화면의 판은 글자가 아니라 NOHA.SB 안 4bpp 그림(184 폭, 한 줄 92 B) — 2026-10-03 실기 «입력판이 가타카나 그대로».
+#   가나 판 0xD7C0(87줄, 잉크 1) · 영문 판 0xF720(잉크 15). 칸 = 가로 11px 간격 · 글자 8×8(갈무리7, menuhook.glyph8 와 같음).
+NOHA_W = 184
+COLS = [0, 11, 22, 33, 44, 66, 77, 88, 99, 110, 132, 143, 154, 165, 176]
+NOHA_KANA = (0xD7C0, 1, [(19, 'アイウエオカキクケコサシスセソ'), (34, 'タチツテトナニヌネノハヒフヘホ'),
+                         (49, 'マミムメモヤ　ユ　ヨラリルレロ'), (64, 'ワヲン　　ァィゥェォャ　ュ　ョ'), (79, 'ッ　　　　ー')])   # 판은 87줄(0‥86) — 80 부터 8줄이면 다음 그림(영문 판 머리)을 찍는다
+TABS = ['한글', '영문', '끝']           # 2026-10-03 영문 되살림 뒤(전: 한글1·한글2·끝)
+TAB_SPANS = [(6, 46), (77, 107), (143, 171)]       # 원래 탭 글자 x 범위(두 판 같음)
+NOHA_ALPHA = (0xF720, 15, [(19, 'ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯ'), (34, 'ＰＱＲＳＴＵＶＷＸＹＺ')])   # 원래 글자 20‥26줄 → 8줄 칸은 19‥26
+
+
+def patch_noha(noha):
+    """NOHA.SB 의 두 입력판 그림에 배정표 음절을 다시 그린다(칸을 지우고 8×8 글리프)"""
+    import menuhook as M
+    d = bytearray(noha)
+    ko = {src: k for kind, src, k in load() if kind == '직접' and k}
+
+    def put(base, x, y, v):
+        o = base + y * (NOHA_W // 2) + x // 2
+        d[o] = (d[o] & 0x0F) | (v << 4) if x % 2 == 0 else (d[o] & 0xF0) | v
+
+    n = 0
+    # 위 탭(0‥8줄) «カタカナ / えいご / おわり» → «한글1 / 한글2 / 끝»(사용자 2026-10-03) — 원래 글자 범위 가운데에
+    for base, ink, _ in (NOHA_KANA, NOHA_ALPHA):
+        for (a, b), label in zip(TAB_SPANS, TABS):
+            cols = []
+            for ch in label:
+                g = M.glyph8(ch)
+                w = max((x + 1 for x in range(8) for y in range(8) if g[y] & (0x80 >> x)), default=4)
+                cols += [[(g[y] >> (7 - x)) & 1 for y in range(8)] for x in range(w)] + [[0] * 8] * 2   # 글자 사이 2px(원래 탭 간격)
+            cols = cols[:-2]
+            x0 = (a + b + 1 - len(cols)) // 2
+            for y in range(9):
+                for x in range(a - 2, b + 3):
+                    put(base, x, y, 0)
+            for i, col in enumerate(cols):
+                for y in range(8):
+                    if col[y]:
+                        put(base, x0 + i, y, ink)
+    for base, ink, rows in (NOHA_KANA, NOHA_ALPHA):
+        for y0, line in rows:
+            for x0, src in zip(COLS, line):
+                if src not in ko:
+                    continue
+                g = M.glyph8(ko[src])
+                for y in range(8):
+                    for x in range(min(10, NOHA_W - x0)):      # 오른쪽 끝 칸은 184 를 넘으면 다음 줄 머리를 지운다
+                        put(base, x0 + x, y0 + y, ink if x < 8 and g[y] & (0x80 >> x) else 0)
+                n += 1
+    return bytes(d), n
 
 
 if __name__ == '__main__':
