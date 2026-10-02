@@ -33,7 +33,7 @@ def load(dirs):
         for f in sorted(glob.glob(os.path.join(d, '*.tsv'))):
             with open(f, encoding='utf-8', newline='') as fh:
                 for r in csv.reader(fh, delimiter='\t', quoting=csv.QUOTE_NONE):
-                    if len(r) < 6 or r[0] == 'ID' or not re.match(r'^[67XN]-\d+$', r[0]):
+                    if len(r) < 6 or r[0] == 'ID' or not re.match(r'^[67XNL]-\d+$', r[0]):
                         continue
                     if r[5].strip():
                         rows[r[0]] = dict(id=r[0], pos=r[1], kind=r[2], src=r[4], kr=r[5])
@@ -44,6 +44,11 @@ def load(dirs):
 
 FAKE = [c for c in map(chr, range(0xAC00, 0xD7A4)) if len(c.encode('euc_kr', 'ignore')) == 2]   # 완성형 2,350자(칸·LRU 최대 부하)
 assert len(FAKE) == 2350
+
+
+FAKE_L = {'ﾆﾝｼﾞｬ': '닌자', 'ﾓﾝｸ': '몽크', 'ｻﾑﾗｲ': '사무라이', 'ﾛｰﾄﾞ': '로드', 'ﾋﾞｼｮｯﾌﾟ': '비숍', 'ｳﾞｧﾙｷﾘｰ': '발키리',
+          'ｻｲｵﾆｯｸ': '사이오닉', 'ﾊﾞｰﾄﾞ': '바드', 'ｱﾙｹﾐｽﾄ': '연금술사', 'ﾚﾝｼﾞｬｰ': '레인저', 'ｼｰﾌ': '시프',
+          'ﾌﾟﾘｰｽﾄ': '프리스트', 'ﾒｲｼﾞ': '메이지', 'ﾌｧｲﾀｰ': '파이터', 'ﾎﾞﾀﾝ': '버튼', 'ｶｰｿﾙ': '커서', 'ｽﾀｰﾄ': '시작'}
 
 
 def fake(rows):
@@ -57,6 +62,11 @@ def fake(rows):
             else:
                 out.append(ch)
         r['kr'] = ''.join(out)
+        if r['id'][0] == 'L':                       # 반각 라벨은 가짜 대신 실제 이름(바이트 예산 안)
+            t = r['src']
+            for jp, ko in sorted(FAKE_L.items(), key=lambda x: -len(x[0])):
+                t = t.replace(jp, ko)
+            r['kr'] = t
 
 
 # ── 부호 ──────────────────────────────────────────────────
@@ -140,14 +150,14 @@ def build(dirs, use_fake=False, write=False, install=False):
     # 실행 파일 메뉴 글꼴에 있는 반각 = 원문 실행 파일 문자열에 쓰인 글자
     allowed = set()
     for r in rows.values():
-        if r['id'].startswith('X-'):
+        if r['id'][0] in 'XL':
             allowed |= {c for c in r['src'] if not rules.is_kr(c)}
     allowed |= {'　', ' '}
     # ① 규칙 검사
     bad = []; warn = collections.Counter(); wex = {}
     for r in tr.values():
-        kind = {'6': '대사', '7': '대사', 'X': '실행', 'N': '나레이션'}[r['id'][0]]
-        cap = int(r['kind'][2:]) if kind == '실행' else None
+        kind = {'6': '대사', '7': '대사', 'X': '실행', 'N': '나레이션', 'L': '실행'}[r['id'][0]]
+        cap = int(r['kind'][2:]) if r['kind'][:2] in ('실행', '라벨') else None
         b, w = rules.validate(kind, r['src'], r['kr'], cap, allowed if kind == '실행' else None)
         r['k'] = rules.squeeze(r['kr'])
         if b:
@@ -208,8 +218,48 @@ def build(dirs, use_fake=False, write=False, install=False):
                 b = E.text(xm[t])
                 assert len(b) <= size, (name, hex(off), t, len(b), size)
                 g[off:off + size] = b + bytes(size - len(b)); k += 1
+        # 반각 라벨(제자리) · 직업 이름(구역 안 다시 배치 + 포인터)
+        lm = {r['src']: r['k'] for r in tr.values() if r['id'][0] == 'L' and r['kind'].startswith('라벨')}
+        jm = {r['src']: r['k'] for r in tr.values() if r['id'][0] == 'L' and r['kind'] == '직업'}
+        G = M.GAMES[name]; LD = G['load']; kan = extract.corpus_kanji(); i = 0; kl = 0
+        a0, a1 = G['jobs'][0] - LD, G['jobs'][1] - LD
+        while lm and i < len(g) - 1:
+            if (i % 4 == 0 or g[i - 1] == 0) and not a0 <= i < a1 and g[i]:
+                r = extract.half_str(bytes(g), i, kan)
+                if r:
+                    if r[0] in lm:
+                        b = E.text(lm[r[0]]); size = r[1] - i
+                        assert len(b) <= size, (name, hex(i), r[0], len(b), size)
+                        g[i:i + size] = b + bytes(size - len(b)); kl += 1
+                    i = r[1] + 1; continue
+            i += 1
+        if jm:
+            olds = []; p = a0
+            while p < a1:
+                if g[p] == 0:
+                    p += 1; continue
+                e = g.index(0, p); olds.append((p, g[p:e].decode('cp932'))); p = e
+            blob_j = bytearray(); new_at = {}
+            for p, t in olds:
+                new_at[p] = len(blob_j); blob_j += (E.text(jm[t]) if t in jm else t.encode('cp932')) + bytes(1)
+            assert len(blob_j) <= a1 - a0, ('직업 이름 구역 넘침', name, len(blob_j), a1 - a0)
+            refs = {}
+            for q in range(0, len(g) - 3, 4):
+                v = struct.unpack_from('>I', g, q)[0] - LD
+                if v in new_at:
+                    refs.setdefault(v, []).append(q)
+            assert all(p in refs for p, _ in olds), ('직업 포인터 못 찾음', name, [hex(p + LD) for p, _ in olds if p not in refs])
+            g[a0:a1] = blob_j + bytes(a1 - a0 - len(blob_j))
+            for p, qs in refs.items():
+                for q in qs:
+                    struct.pack_into('>I', g, q, LD + a0 + new_at[p])
+            for p, t in olds:                       # 되읽기: 옛 포인터 자리 → 새 문자열
+                want = E.text(jm[t]) if t in jm else t.encode('cp932')
+                for q in refs[p]:
+                    v = struct.unpack_from('>I', g, q)[0] - LD
+                    assert bytes(g[v:g.index(0, v)]) == want, ('직업 되읽기', name, t)
         files[name] = g
-        print('실행 %-12s 문자열 %d곳' % (name, k))
+        print('실행 %-12s 문자열 %d곳 · 라벨 %d · 직업 %d' % (name, k, kl, len(jm)))
     # ⑤ 나레이션
     nm = {r['src']: r['k'] for r in tr.values() if r['id'][0] == 'N'}
     D = __import__('disc').Disc(); fs = {e[0]: e for e in D.walk()}

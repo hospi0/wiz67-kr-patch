@@ -12,6 +12,8 @@ r"""Wizardry VI·VII 번역 TSV 추출 (2026-10-02) → my files/tsv/
        시작 = 4 B 정렬(또는 앞이 NUL) · 첫 글자 전각(또는 ' *?' + 가나 2자 이상) · 한자는 대사 말뭉치에 나오는 것만(가나 2자 이상이면 허용) · 2글자 이상
        (1글자 문자열 = 이름 입력 글자판 등 데이터라 뺌)
   ★같은 내용을 work/text/<이름>.tsv 에 통짜로도 씀(GitHub 저장소용 — 쪼개지 않음).
+  ⑤ wiz_라벨  = 반각 라벨: 초상 아래 직업 이름 14개(구분 «직업» — 구역 안 다시 배치) · 패드 설명 반각 가나 섞인 문자열(«라벨N» 제자리, N = 원래 바이트)
+       (반각은 메뉴 렌더러의 반각 경로 — 한글 부호로 바꾸면 메뉴 훅이 그림, 간격 9)
   python tools/extract.py
 """
 import os, re, sys
@@ -179,15 +181,96 @@ def exe_strings():
     return [row('X-%05d' % (k + 1), first[t], '실행%d' % size[t], count[t], t) for k, t in enumerate(first)]
 
 
+# ── ④ 반각 라벨(초상 아래 직업 이름 · 반각 가나 섞인 문자열) ──────────────
+HALF = re.compile('[ｦ-ﾟ]')
+PAD_WORDS = {'ｶｰｿﾙ', 'ｽﾀｰﾄ', 'ﾎﾞﾀﾝ'}
+
+
+def half_str(d, i, kan):
+    """반각 가나가 2자 이상 든 NUL 끝 문자열(전각 섞여도 됨) — 영숫자·% 섞이면 잡음으로 버림"""
+    j = i; out = []
+    while j < len(d) and d[j] != 0:
+        b = d[j]
+        if b in LEAD and j + 1 < len(d) and 0x40 <= d[j + 1] <= 0xFC and d[j + 1] != 0x7F:
+            try:
+                out.append(d[j:j + 2].decode('cp932'))
+            except UnicodeDecodeError:
+                return None
+            j += 2
+        elif 0xA1 <= b <= 0xDF or b == 0x20:
+            out.append(bytes([b]).decode('cp932')); j += 1
+        else:
+            return None
+    if j >= len(d):
+        return None
+    t = ''.join(out)
+    # 순수 반각 = 확인한 낱말만(나머지는 탁점 변환표·데이터 잡음) / 섞인 것 = «전각…+반각 낱말»(작은 글자·장음으로 시작하는 반각 덩어리 = 잡음)
+    m = re.match('^([^｡-ﾟ]+)([ｦ-ﾟ]{2,})$', t)
+    if t not in PAD_WORDS and not (m and m.group(2)[0] not in 'ｧｨｩｪｫｬｭｮｯｰﾞﾟ'):
+        return None
+    if any('一' <= c <= '鿿' and c not in kan for c in t):
+        return None
+    return t, j
+
+
+def labels():
+    """L- 줄: 구분 «직업»(14개, 구역 안에서 다시 배치 — 빌더가 포인터 고침) / «라벨N»(제자리, N = 원래 바이트)"""
+    import menuhook
+    kan = corpus_kanji()
+    first = {}; count = {}; kind = {}
+    for f, G in menuhook.GAMES.items():
+        d = open(os.path.join(DISC, f), 'rb').read(); a, b = G['jobs']; L = G['load']
+        seg = d[a - L:b - L]; p = 0
+        while p < len(seg):
+            if seg[p] == 0:
+                p += 1; continue
+            e = seg.index(0, p); t = seg[p:e].decode('cp932')
+            first.setdefault(t, '%s@%X' % (f.split('.')[0], a + p)); count[t] = count.get(t, 0) + 1; kind[t] = '직업'
+            p = e
+        i = 0
+        while i < len(d) - 1:
+            if (i % 4 == 0 or d[i - 1] == 0) and not a - L <= i < b - L and d[i]:
+                r = half_str(d, i, kan)
+                if r:
+                    t = r[0]
+                    first.setdefault(t, '%s@%X' % (f.split('.')[0], L + i)); count[t] = count.get(t, 0) + 1
+                    kind[t] = '라벨%d' % min(int(kind.get(t, '라벨999')[2:]), r[1] - i)
+                    i = r[1] + 1; continue
+            i += 1
+    return [row('L-%03d' % (k + 1), first[t], kind[t], count[t], t) for k, t in enumerate(first)]
+
+
+def keep_translations(stem, lines):
+    """work/text/<stem>.tsv 에 있던 번역 열을 새 줄에 옮김 — ID·원문이 같으면 그 번역, 아니면 같은 원문의 번역"""
+    path = os.path.join(TEXT, stem + '.tsv')
+    if not os.path.exists(path):
+        return lines
+    old_id = {}; old_src = {}
+    for ln in open(path, encoding='utf-8').read().split('\n')[1:]:
+        r = ln.split('\t')
+        if len(r) == 6 and r[5]:
+            old_id[(r[0], r[4])] = r[5]; old_src.setdefault(r[4], r[5])
+    out = []
+    for ln in lines:
+        r = ln.rstrip('\n').split('\t')
+        r[5] = old_id.get((r[0], r[4]), old_src.get(r[4], ''))
+        out.append('\t'.join(r) + '\n')
+    nk = sum(1 for l in out if l.rstrip('\n').split('\t')[5])
+    assert nk >= len(old_id), ('번역이 줄어듦 — 쓰지 않음', stem, nk, len(old_id))
+    print('  %s: 번역 보존 %d줄' % (stem, nk))
+    return out
+
+
 if __name__ == '__main__':
     os.makedirs(OUT, exist_ok=True)
     for f in os.listdir(OUT):
         if re.match(r'wiz(6|7)?_.*\.tsv$', f):
             os.remove(os.path.join(OUT, f))
     sets = [('wiz6_대사', dialogue('6')), ('wiz7_대사', dialogue('7')),
-            ('wiz_실행', exe_strings()), ('wiz_나레이션', narration())]
+            ('wiz_실행', exe_strings()), ('wiz_나레이션', narration()), ('wiz_라벨', labels())]
     tail = []; nfile = 0
     for stem, lines in sets:
+        lines = keep_translations(stem, lines)      # ★이미 채운 번역은 보존(ID·원문이 같을 때, 아니면 원문으로)
         nch = sum(len(JP.findall(l.split('\t')[4])) for l in lines)
         print('%s: %d줄 · 일본어 %d자' % (stem, len(lines), nch))
         with open(os.path.join(TEXT, stem + '.tsv'), 'w', encoding='utf-8', newline='\n') as f:

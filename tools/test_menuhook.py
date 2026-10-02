@@ -6,6 +6,7 @@ import os, struct, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import menuhook as M
+import struct
 
 M32 = 0xFFFFFFFF
 
@@ -66,6 +67,7 @@ class CPU:
             elif lo4 == 1: self.ww(r[n], r[m])
             elif lo4 == 0: self.wb(r[n], r[m])
             elif lo4 == 6: r[n] = (r[n] - 4) & M32; self.wl(r[n], r[m])
+            elif lo4 == 8: self.t = int((r[n] & r[m]) == 0)
             else: raise ValueError(hex(op))
             return None
         if hi == 0x0:
@@ -79,6 +81,7 @@ class CPU:
             elif lo4 == 6: self.wl((r[0] + r[n]) & M32, r[m])
             else: raise ValueError(hex(op))
             return None
+        if hi == 0x5: r[n] = self.rl((r[m] + (op & 15) * 4) & M32); return None
         if hi == 0xD: r[n] = self.rl(((pc + 4) & ~3) + (op & 0xFF) * 4); return None
         if (op >> 8) == 0xC7: r[0] = ((pc + 4) & ~3) + (op & 0xFF) * 4; return None
         if (op >> 8) == 0xC9: r[0] &= op & 0xFF; return None
@@ -146,6 +149,33 @@ def main():
         mem[blob_ram + k] = v
       cpu.r[4] = 0x8BA0; cpu.r[15] = 0x06100000; run(cpu, G['cls'])
       ok &= cpu.r[0] == 3; print('패치 분류 입구 8BA0 →', cpu.r[0])
+      # 이름 변환(HCONV): 원래 함수 동작(표 123쌍 앞 2바이트 비교, 없으면 124번째)을 파이썬으로 재현해 비교
+      tab = G['conv_tab']; L0 = 0x06010000
+      def ref(src):
+        out = b''
+        for j in range(0, len(src), 2):
+          c = src[j:j + 2]
+          if 0x8B <= c[0] <= 0x9F:
+            out += c; continue
+          for k in range(124):
+            fp = struct.unpack_from('>I', exe, tab - L0 + 8 * k)[0]
+            if k == 123 or exe[fp - L0:fp - L0 + 2] == c:
+              hp = struct.unpack_from('>I', exe, tab - L0 + 8 * k + 4)[0]
+              out += exe[hp - L0:].split(bytes(1))[0]; break
+        return out
+      for nm in ['スレイウッド', 'バッカス', 'グレイス', 'ヴィ・ドミナ', 'ー亜', '']:
+        sb = nm.encode('cp932')
+        for t in (sb, M.kcode(3) + M.kcode(0) + sb[:2] if sb else M.kcode(1)):
+          SRC = 0x06120000
+          for k2 in range(len(t) + 1):
+            mem[SRC + k2] = t[k2] if k2 < len(t) else 0
+          cpu.r[4] = SRC; cpu.r[15] = 0x06100000; cpu.r[8] = 0x5A5A
+          run(cpu, G['conv'])
+          buf = G['conv_buf']; got = bytes(cpu.rb(buf + q) for q in range(40)).split(bytes(1))[0]
+          good = got == ref(t) and cpu.r[0] == buf and cpu.r[8] == 0x5A5A and cpu.r[15] == 0x06100000
+          ok &= good
+          if not good: print('★이름 변환', t.hex(), got.hex(), ref(t).hex())
+      print('이름 변환 HCONV', 'OK' if ok else '★')
       # 그리기 입구: 지연 슬롯·트램펄린을 거쳐 DRAW 시작에 닿는지(DRAW 첫 명령에서 멈춤)
       cpu.r[15] = 0x06100000; cpu.r[8] = 0x88; cpu.r[9] = 0x99
       run(cpu, G['draw'], ret=blob_ram + o['DRAW'])

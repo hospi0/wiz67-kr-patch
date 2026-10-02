@@ -27,12 +27,20 @@ FONT8 = r'C:\claude\utils\font\Galmuri-v2.40.3\Galmuri7.bdf'
 
 GAMES = {   # 실행 파일 → 주소
     'WIZARDRY.BIN': dict(load=0x06010000, kanji=0x2D2430, cls=0x0603392C, cls_end=0x060339B8,
-                         draw=0x06033B1C, basev=0x06078B96, vram=0x25C10000),
+                         draw=0x06033B1C, basev=0x06078B96, vram=0x25C10000,
+                         conv=0x06020608, conv_end=0x06020694, conv_tab=0x06059EC0, conv_buf=0x06085F98,
+                         jobs=(0x06010D90, 0x06010DF8)),
     'WIZ6.BIN':     dict(load=0x06010000, kanji=0x280000, cls=0x06015480, cls_end=0x06015510,
-                         draw=0x06015678, basev=0x06078836, vram=0x25C10000),
+                         draw=0x06015678, basev=0x06078836, vram=0x25C10000,
+                         conv=0x0603A9A4, conv_end=0x0603AA30, conv_tab=0x060861CC, conv_buf=0x060A1714,
+                         jobs=(0x060182FC, 0x06018364)),
     'SL.BIN':       dict(load=0x06010000, kanji=0x280000, cls=0x06015548, cls_end=0x060155D8,
-                         draw=0x06015740, basev=0x0607A456, vram=0x25C10000),
-}   # VI: KANJI12 0x280000 = 오프닝 스테이트에서 확인(메뉴 중 상주는 ⏳실기), FONT_1 → 0x25C10000(0x06015384 적재, 리터럴 확인)
+                         draw=0x06015740, basev=0x0607A456, vram=0x25C10000,
+                         conv=0x0603B654, conv_end=0x0603B6E0, conv_tab=0x06087514, conv_buf=0x060A2BC4,
+                         jobs=(0x060183C4, 0x0601842C)),
+}   # conv = 이름 전각→반각(초상 라벨) 함수(코드는 셋이 같음 — 바이트 패턴), conv_tab = (전각 ptr, 반각 ptr)×124(마지막 = ﾌﾒｲ 기본값)
+    # jobs = 반각 직업 이름 14개 구역(ﾆﾝｼﾞｬ‥ﾌｧｲﾀｰ, 끝 다음 = 남의 코드) — 빌더가 구역 안에서 다시 배치하고 포인터를 고침
+    # VI: KANJI12 0x280000 = 오프닝 스테이트에서 확인(메뉴 중 상주는 ⏳실기), FONT_1 → 0x25C10000(0x06015384 적재, 리터럴 확인)
 
 
 def kcode(i):
@@ -151,6 +159,43 @@ def blob(syllables):
     a.label('t4'); a.rts(); a.movi(4, 'r0')
     a.label('t5'); a.rts(); a.movi(5, 'r0')
 
+    # ── HCONV: 이름 전각 → 반각(초상 라벨). R4 = 원문, R5 = 버퍼, R6 = 표 → R0 = 버퍼 시작(원래처럼). R8 은 저장·복원
+    #   한글(리드 0x8B‥0x9F) = 2바이트 그대로 복사(메뉴 훅이 그림) / 그 밖 = 원래처럼 표 123쌍에서 앞 2바이트가 같은 것, 없으면 124번째(ﾌﾒｲ)
+    a.align4()
+    a.label('HCONV')
+    a.movl_predec('r5', 'r15'); a.movl_predec('r8', 'r15')
+    a.label('hc_loop')
+    a.movb_load('r4', 'r0'); a.extub('r0', 'r0'); a.tst('r0', 'r0')
+    a.bt('hc_end')
+    a.movb_postinc('r4', 'r0'); a.extub('r0', 'r0'); a.movb_postinc('r4', 'r1'); a.extub('r1', 'r1')
+    a.mov('r0', 'r2'); a.addi(-0x80, 'r2'); a.addi(-0x0B, 'r2'); a.extub('r2', 'r2')
+    a.movi(0x15, 'r3'); a.cmphs('r3', 'r2')
+    a.bt('hc_find')
+    a.movb_store('r0', 'r5'); a.addi(1, 'r5'); a.movb_store('r1', 'r5'); a.addi(1, 'r5')
+    a.bra('hc_loop'); a.nop()
+    a.label('hc_find')
+    a.mov('r6', 'r2'); a.movi(123, 'r3')
+    a.label('hc_k')
+    a.movl_load('r2', 'r7')
+    a.movb_postinc('r7', 'r8'); a.extub('r8', 'r8'); a.cmpeq('r0', 'r8')
+    a.bf('hc_next')
+    a.movb_load('r7', 'r8'); a.extub('r8', 'r8'); a.cmpeq('r1', 'r8')
+    a.bt('hc_hit')
+    a.label('hc_next')
+    a.addi(8, 'r2'); a.dt('r3')
+    a.bf('hc_k')
+    a.label('hc_hit')                                                      # r2 = 찾은 쌍(못 찾으면 124번째)
+    a.movl_disp(4, 'r2', 'r7')
+    a.label('hc_cp')
+    a.movb_postinc('r7', 'r8'); a.tst('r8', 'r8')
+    a.bt('hc_loop')
+    a.movb_store('r8', 'r5'); a.addi(1, 'r5')
+    a.bra('hc_cp'); a.nop()
+    a.label('hc_end')
+    a.movi(0, 'r0'); a.movb_store('r0', 'r5')
+    a.movl_postinc('r15', 'r8'); a.movl_postinc('r15', 'r0')
+    a.rts(); a.nop()
+
     # ── DRAW: R6 = 부호+0x7D61, R8 = 기준 변수 주소, R9 = 돌아갈 곳, R1 = FONT_1 VRAM. R4·R5·R7·R10‥R14 보존
     a.align4()
     a.label('pass0')                                                       # 한글 아님 → 그대로 돌아감(bt 가 닿는 곳)
@@ -236,7 +281,7 @@ def blob(syllables):
     data[o_map:o_map + ns] = b'\xff' * ns
     for i, ch in enumerate(syllables):
         data[o_font + 8 * i:o_font + 8 * i + 8] = glyph8(ch)
-    return bytes(out) + bytes(data), {'CLS': a.labels['CLS'], 'DRAW': a.labels['DRAW'], 'DATA': data_at}
+    return bytes(out) + bytes(data), {'CLS': a.labels['CLS'], 'DRAW': a.labels['DRAW'], 'HCONV': a.labels['HCONV'], 'DATA': data_at}
 
 
 def patch_exe(exe, name, offs):
@@ -261,6 +306,14 @@ def patch_exe(exe, name, offs):
     d = (tramp - (G['draw'] + 4)) // 2
     assert -2048 <= d < 0
     struct.pack_into('>HH', g, G['draw'] - L, 0xA000 | (d & 0xFFF), 0x2F86)
+    # 이름 변환 입구 → 블롭 HCONV(R5 = 버퍼, R6 = 표)
+    assert get(G['conv']) == 0x2F86 and get(G['conv'] + 0x12) == 0x6C43
+    c = A(G['conv'])
+    c.movl_pc('BUF', 'r5'); c.movl_pc('TAB', 'r6'); c.movl_pc('HC', 'r0'); c.jmp('r0'); c.nop()
+    c.defl('BUF', G['conv_buf']); c.defl('TAB', G['conv_tab']); c.defl('HC', blob_ram + offs['HCONV'])
+    code, _ = c.assemble()
+    assert G['conv'] + len(code) <= G['conv_end'], len(code)
+    g[G['conv'] - L:G['conv'] - L + len(code)] = code
     return bytes(g)
 
 
